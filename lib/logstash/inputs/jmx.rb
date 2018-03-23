@@ -154,7 +154,7 @@ class LogStash::Inputs::Jmx < LogStash::Inputs::Base
         end
       end
     end
-    return validation_errors
+    validation_errors
   end
 
   private
@@ -193,6 +193,43 @@ class LogStash::Inputs::Jmx < LogStash::Inputs::Base
     end
     decorate(event)
     queue << event
+  end
+
+  private
+  def send_row_to_queue(queue,host,metric_path,metric_value,metric_value_string)
+    @logger.debug('Send event to queue to be processed by filters/outputs')
+    event = LogStash::Event.new
+    event.set('host', host)
+    event.set('path', @path)
+    event.set('type', @type)
+    number_type = [Fixnum, Bignum, Float]
+    boolean_type = [TrueClass, FalseClass]
+    metric_path_substituted = metric_path.gsub(' ','_').gsub('"','')
+
+    if number_type.include?(metric_value.class)
+      @logger.debug("The value #{metric_value} is of type number: #{metric_value.class}")
+      event.set('metric_path', metric_path_substituted)
+      event.set('metric_value_number', metric_value)
+    elsif boolean_type.include?(metric_value.class)
+      @logger.debug("The value #{metric_value} is of type boolean: #{metric_value.class}")
+      event.set('metric_path', metric_path_substituted+'_bool')
+      event.set('metric_value_number', metric_value ? 1 : 0)
+    end
+
+    event.set('metric_path', metric_path_substituted)
+    event.set('metric_value_string', metric_value_string)
+
+    decorate(event)
+    queue << event
+  end
+
+  private
+  def is_number(value)
+    number_type = [Fixnum, Bignum, Float]
+    boolean_type = [TrueClass, FalseClass]
+
+    @logger.debug("The value #{value} is of type number: #{value.class}")
+    number_type.include?(value.class) or boolean_type.include?(value.class)
   end
 
   # Thread function to retrieve metrics from JMX
@@ -255,6 +292,27 @@ class LogStash::Inputs::Jmx < LogStash::Inputs::Base
                         @logger.debug("Get jmx value #{jmx_attribute_value[jmx_attribute_value_composite]} for attribute #{attribute}.#{jmx_attribute_value_composite} to #{jmx_object_name.object_name}")
                         send_event_to_queue(queue, thread_hash_conf['host'], "#{base_metric_path}.#{object_name}.#{attribute}.#{jmx_attribute_value_composite}", jmx_attribute_value[jmx_attribute_value_composite])
                       end
+                    elsif jmx_attribute_value.instance_of? Java::JavaxManagementOpenmbean::TabularDataSupport
+                      @logger.debug('The jmx value is tabular')
+                      jmx_attribute_value.each do |jmx_attribute_value_tabular|
+                        row = jmx_attribute_value_tabular.last
+
+                        # Extract a number and a string from the columns
+                        # Set default values, in case nothing is found
+                        row_string = row.to_s
+                        row_number = 0
+                        row.each do |row_attribute|
+                          @logger.debug("Found row attribute #{row_attribute} with value #{row[row_attribute]}")
+                          if is_number(row[row_attribute])
+                            row_number = row[row_attribute]
+                          else
+                            row_string = row[row_attribute].to_s
+                          end
+                        end
+
+                        @logger.debug("Found jmx tabular attribute #{attribute} with columns #{row_number}    #{row_string}")
+                        send_row_to_queue(queue, thread_hash_conf['host'], "#{base_metric_path}.#{object_name}.#{attribute}", row_number, row_string)
+                      end
                     else
                       @logger.debug("Get jmx value #{jmx_attribute_value} for attribute #{attribute} to #{jmx_object_name.object_name}")
                       send_event_to_queue(queue, thread_hash_conf['host'], "#{base_metric_path}.#{object_name}.#{attribute}", jmx_attribute_value)
@@ -274,6 +332,27 @@ class LogStash::Inputs::Jmx < LogStash::Inputs::Base
                       jmx_attribute_value.each do |jmx_attribute_value_composite|
                         @logger.debug("Get jmx value #{jmx_attribute_value[jmx_attribute_value_composite]} for attribute #{jmx_object_name.attributes[attribute]}.#{jmx_attribute_value_composite} to #{jmx_object_name.object_name}")
                         send_event_to_queue(queue, thread_hash_conf['host'], "#{base_metric_path}.#{object_name}.#{jmx_object_name.attributes[attribute]}.#{jmx_attribute_value_composite}", jmx_attribute_value[jmx_attribute_value_composite])
+                      end
+                    elsif jmx_attribute_value.instance_of? Java::JavaxManagementOpenmbean::TabularDataSupport
+                      @logger.debug('The jmx value is tabular')
+                      jmx_attribute_value.each do |jmx_attribute_value_tabular|
+                        row = jmx_attribute_value_tabular.last
+
+                        # Extract a number and a string from the columns
+                        # Set default values, in case nothing is found
+                        row_string = row.to_s
+                        row_number = 0
+                        row.each do |row_attribute|
+                          @logger.debug("Found row attribute #{row_attribute} with value #{row[row_attribute]}")
+                          if is_number(row[row_attribute])
+                            row_number = row[row_attribute]
+                          else
+                            row_string = row[row_attribute].to_s
+                          end
+                        end
+
+                        @logger.debug("Found jmx tabular attribute #{attribute} with columns #{row_number}    #{row_string}")
+                        send_row_to_queue(queue, thread_hash_conf['host'], "#{base_metric_path}.#{object_name}.#{attribute}", row_number, row_string)
                       end
                     else
                       @logger.debug("Get jmx value #{jmx_attribute_value} for attribute #{jmx_object_name.attributes[attribute]} to #{jmx_object_name.object_name}")
